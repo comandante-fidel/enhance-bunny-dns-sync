@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&display=block');
+@import "tailwindcss";
+
+@theme {
+    --breakpoint-xxs: 25rem;
+}
+
+body, html {
+    @apply min-w-[350px];
+}
+
+html {
+    @apply text-[15px] p-0 font-[Montserrat];
+}
+
+body {
+    @apply bg-white text-gray-800 p-0;
+}
+
+a[href], button.link {
+    @apply cursor-pointer decoration-gray-200  hover:text-emerald-500 hover:decoration-emerald-50;
+
+    &a[href] {
+        @apply underline;
+    }
+
+    &button.link:disabled {
+        @apply hover:text-gray-800 cursor-default;
+    }
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f5f5f5;
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: #ccc;
+    border-radius: 4px;
+    border: 2px solid #f5f5f5;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: #aaa;
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #ccc #f5f5f5;
+}

@@ -1,0 +1,17 @@
+{
+  "name": "enhance-bunny-dns-sync",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fidel",
+    "email": "fidel@fidel.im",
+    "url": "https://fidel.im"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.12",
+    "archiver": "^7.0.1",
+    "tailwindcss": "^4.1.12"
+  },
+  "scripts": {
+    "compile-web-css": "tailwindcss -i ./resources/web.css -o ./public_html/web.min.css --content ./resources/web.html --minify --watch"
+  }
+}

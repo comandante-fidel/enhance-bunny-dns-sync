@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, min-scale=1.0" />
+    <title>Enhance – Bunny DNS sync</title>
+    <link rel="stylesheet" href="./web.min.css" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22%23059669%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M13.836%202.477a.75.75%200%200%201%20.75.75v3.182a.75.75%200%200%201-.75.75h-3.182a.75.75%200%200%201%200-1.5h1.37l-.84-.841a4.5%204.5%200%200%200-7.08.932.75.75%200%200%201-1.3-.75%206%206%200%200%201%209.44-1.242l.842.84V3.227a.75.75%200%200%201%20.75-.75Zm-.911%207.5A.75.75%200%200%201%2013.199%2011a6%206%200%200%201-9.44%201.241l-.84-.84v1.371a.75.75%200%200%201-1.5%200V9.591a.75.75%200%200%201%20.75-.75H5.35a.75.75%200%200%201%200%201.5H3.98l.841.841a4.5%204.5%200%200%200%207.08-.932.75.75%200%200%201%201.025-.273Z%22%20clip-rule%3D%22evenodd%22%20/%3E%3C/svg%3E" />
+</head>
+<body class="h-dvh">
+
+<script type="module" id="app-code">
+    export default {
+        data()
+        {
+            return {
+                dns_zones: {},
+                first_run: true,
+                try_update_dns_zones: false,
+                sync_running: {},
+                toggling_in_list: {},
+                log: '',
+                clearing_log: false,
+                dns_zones_filter_mode: null,
+                dns_zones_list: [],
+                block_updates: false,
+                load_data_timeout: null,
+                loading_data: false,
+                forced_loading_data: false,
+                filtering_modes: {
+                    blacklist: {
+                        title: 'Blacklist',
+                        description: 'Sync all domain except selected'
+                    },
+                    whitelist: {
+                        title: 'Whitelist',
+                        description: 'Sync only selected domains'
+                    }
+                }
+            };
+        },
+        async mounted()
+        {
+            await this.loadData();
+            document.querySelector('#app-template').classList.remove('opacity-0', 'pointer-events-none');
+        },
+        methods: {
+            async forceLoadData()
+            {
+                await this.stopLoadingData();
+                await this.loadData(true);
+            },
+            async loadData(force_update = false)
+            {
+                this.loading_data = true;
+
+                if (force_update) {
+                    this.forced_loading_data = true;
+                }
+
+                try {
+                    const response = await fetch('?' + (new URLSearchParams({
+                        action: 'getData',
+                        update_dns_zones_list: (this.try_update_dns_zones || force_update) ? '1' : '0'
+                    })).toString());
+
+                    const data = await response.json();
+
+                    if (!this.block_updates) {
+                        // If this is the first request, and we have no DNS zones,
+                        // try to fetch them from Enhance CP in the next request (and run it immediately)
+                        this.try_update_dns_zones = this.try_update_dns_zones
+                            ? false
+                            : this.first_run && !Object.keys(data.dns_zones || {}).length
+                        ;
+
+                        this.dns_zones = data.dns_zones;
+                        this.dns_zones_filter_mode = data.dns_zones_filter_mode;
+                        this.dns_zones_list = data.dns_zones_list;
+
+                        if (this.log !== data.log) {
+                            this.log = data.log;
+                        }
+                    }
+                } finally {
+                    this.load_data_timeout = setTimeout(
+                        this.loadData,
+                        this.try_update_dns_zones ? 50 : 5000
+                    );
+
+                    this.loading_data = false;
+
+                    if (force_update) {
+                        this.forced_loading_data = false;
+                    }
+
+                    this.first_run = false;
+                }
+            },
+            async syncZone(zone_domain)
+            {
+                this.sync_running[zone_domain] = true;
+                await this.stopLoadingData();
+
+                try {
+                    await fetch('?' + (new URLSearchParams({
+                        action: 'syncZone',
+                        zone: zone_domain
+                    }).toString()));
+                } finally {
+                    delete this.sync_running[zone_domain];
+                    await this.loadData();
+                }
+            },
+            async toggleInList(zone_domain)
+            {
+                this.toggling_in_list[zone_domain] = true;
+                this.block_updates = true;
+                await this.stopLoadingData();
+
+                try {
+                    await fetch('?' + (new URLSearchParams({
+                        action: 'toggleInList',
+                        zone: zone_domain
+                    }).toString()));
+                } finally {
+                    this.block_updates = false;
+                    await this.loadData();
+                    delete this.toggling_in_list[zone_domain];
+                }
+            },
+            async clearLog()
+            {
+                this.clearing_log = true;
+
+                try {
+                    await fetch('?action=clearLog');
+                    await this.loadData();
+                } finally {
+                    this.clearing_log = false;
+                }
+            },
+            async setFilterMode()
+            {
+                const filter_mode = this.dns_zones_filter_mode;
+                this.block_updates = true;
+                await this.stopLoadingData();
+
+                try {
+                    await fetch('?' + (new URLSearchParams({
+                        action: 'setFilterMode',
+                        filter_mode: filter_mode
+                    })));
+                } finally {
+                    this.block_updates = false;
+                    await this.loadData();
+                }
+            },
+            async stopLoadingData()
+            {
+                while (this.loading_data) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+
+                clearTimeout(this.load_data_timeout);
+            },
+            isSyncForbidden(domain)
+            {
+                return (this.dns_zones_filter_mode === 'blacklist' && this.dns_zones_list.includes(domain))
+                    || (this.dns_zones_filter_mode === 'whitelist' && !this.dns_zones_list.includes(domain))
+                ;
+            }
+        }
+    }
+</script>
+<div id="app-template" class="opacity-0 pointer-events-none p-2 xl:p-0 h-full flex justify-center">
+    <div class="flex flex-col md:flex-row w-full max-w-7xl md:grid-cols-2 gap-4 md:gap-8 lg:gap-10 xl:gap-12 py-2 md:py-4 lg:py-6 xl:py-8 max-h-full">
+        <div class="flex flex-col gap-2 basis-1/2">
+            <h2 class="flex justify-between">
+                <span class="flex gap-3">
+                    <span class="text-2xl font-bold">DNS zones</span>
+                    <button
+                        class="link"
+                        :class="{'animate-ping !text-emerald-500': forced_loading_data}"
+                        :disabled="forced_loading_data"
+                        title="Load from Enhance CP"
+                        @click="forceLoadData"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewbox="0 0 16 16" class="size-6 fill-current">
+                            <path fill-rule="evenodd" d="M4.5 13a3.5 3.5 0 0 1-1.41-6.705A3.5 3.5 0 0 1 9.72 4.124a2.5 2.5 0 0 1 3.197 3.018A3.001 3.001 0 0 1 12 13H4.5Zm6.28-3.97a.75.75 0 1 0-1.06-1.06l-.97.97V6.25a.75.75 0 0 0-1.5 0v2.69l-.97-.97a.75.75 0 0 0-1.06 1.06l2.25 2.25a.75.75 0 0 0 1.06 0l2.25-2.25Z" clip-rule="evenodd" />
+                        </svg>
+                    </button>
+                </span>
+                <span class="text-sm flex gap-4 items-center">
+                    <span class="cursor-help hidden xxs:block" title="Filtering mode">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewbox="0 0 16 16" class="size-4 fill-current">
+                            <path d="M14 2a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v2.172a2 2 0 0 0 .586 1.414l2.828 2.828A2 2 0 0 1 6 9.828v4.363a.5.5 0 0 0 .724.447l2.17-1.085A2 2 0 0 0 10 11.763V9.829a2 2 0 0 1 .586-1.414l2.828-2.828A2 2 0 0 0 14 4.172V2Z" />
+                        </svg>
+                    </span>
+                    <label
+                        v-for="(filtering_mode, filtering_mode_name) in filtering_modes"
+                        class="flex items-center gap-1"
+                        :title="filtering_mode.description"
+                    >
+                        <input type="radio" v-model="dns_zones_filter_mode" :value="filtering_mode_name" @change="setFilterMode()">
+                        <span class="cursor-help" v-text="filtering_mode.title"></span>
+                    </label>
+                </span>
+            </h2>
+            <ul class="pb-4 pr-2 max-h-full overflow-y-auto">
+                <li v-if="!Object.keys(dns_zones).length || forced_loading_data">
+                    <em v-if="try_update_dns_zones || forced_loading_data">Fetching DNS zones from Enhance CP...</em>
+                    <em v-else>List is empty</em>
+                </li>
+                <template v-else>
+                    <table class="w-full">
+                        <tr class="bg-gray-100 uppercase text-[9px] leading-tight text-left">
+                            <th></th>
+                            <th class="px-2">Domain</th>
+                            <th class="py-1 text-center min-w-[110px]">Last synced update</th>
+                            <th colspan="3"></th>
+                        </tr>
+                        <tr
+                            v-for="(dns_zone, domain) in dns_zones"
+                            class="hover:bg-gray-50"
+                        >
+                            <td>
+                                <span
+                                    title="Syncable records count"
+                                    class="text-[10px] font-black uppercase text-gray-800 py-0 min-w-[40px] flex items-center justify-between px-0.5 cursor-help"
+                                    :class="{'opacity-60': isSyncForbidden(domain)}"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewbox="0 0 16 16" class="size-4 opacity-40 fill-current">
+                                        <path d="M8 7c3.314 0 6-1.343 6-3s-2.686-3-6-3-6 1.343-6 3 2.686 3 6 3Z" />
+                                        <path d="M8 8.5c1.84 0 3.579-.37 4.914-1.037A6.33 6.33 0 0 0 14 6.78V8c0 1.657-2.686 3-6 3S2 9.657 2 8V6.78c.346.273.72.5 1.087.683C4.42 8.131 6.16 8.5 8 8.5Z" />
+                                        <path d="M8 12.5c1.84 0 3.579-.37 4.914-1.037.366-.183.74-.41 1.086-.684V12c0 1.657-2.686 3-6 3s-6-1.343-6-3v-1.22c.346.273.72.5 1.087.683C4.42 12.131 6.16 12.5 8 12.5Z" />
+                                    </svg>
+                                    <span class="grow text-center" v-text="dns_zone.records_count"></span>
+                                </span>
+                            </td>
+                            <td class="px-2 w-full">
+                                <a
+                                    :href="`https://${domain}`"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                ><span
+                                    v-text="domain"
+                                    :class="{'!line-through': isSyncForbidden(domain)}"
+                                ></span></a>
+                            </td>
+                            <td class="px-2 text-center">
+                               <span
+                                   class="text-sm text-gray-600 cursor-help text-center whitespace-nowrap"
+                                   v-text="dns_zone.last_synced_change_human"
+                                   :title="dns_zone.last_synced_change ? `Last synced update: ${dns_zone.last_synced_change_detailed}` : `${domain} has no changes to sync yet`"
+                               ></span>
+                            </td>
+                            <td class="px-2">
+                                <span
+                                    title="Version"
+                                    class="text-[10px] font-black text-gray-800 text-center min-w-[40px] cursor-help"
+                                >
+                                    <span class="opacity-50 font-normal">v</span><span v-text="dns_zone.version"></span>
+                                </span>
+                            </td>
+                            <td class="px-0.5">
+                                <button
+                                    tabindex="0"
+                                    class="p-1 cursor-pointer hover:text-gray-600 align-middle"
+                                    :class="{
+                                        'text-rose-500 hover:text-rose-600': isSyncForbidden(domain),
+                                        'cursor-wait': toggling_in_list[domain] === true
+                                    }"
+                                    @click="toggleInList(domain)"
+                                    :disabled="toggling_in_list[domain] === true"
+                                    :title="`Syncing for ${domain} is currently ${isSyncForbidden(domain) ? 'disabled' : 'enabled'}\r\nClick to ${isSyncForbidden(domain) ? 'enable' : 'disable'} syncing for ${domain}`"
+                                >
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        viewbox="0 0 16 16"
+                                        class="size-4 fill-current"
+                                        :class="{'animate-ping': toggling_in_list[domain] === true}"
+                                    >
+                                        <path fill-rule="evenodd" d="M3.05 3.05a7 7 0 1 1 9.9 9.9 7 7 0 0 1-9.9-9.9Zm1.627.566 7.707 7.707a5.501 5.501 0 0 0-7.707-7.707Zm6.646 8.768L3.616 4.677a5.501 5.501 0 0 0 7.707 7.707Z" clip-rule="evenodd" />
+                                    </svg>
+                                </button>
+                            </td>
+                            <td class="px-0.5">
+                                <button
+                                    class="link p-1 align-middle"
+                                    :class="{
+                                        'cursor-wait': sync_running[domain] === true,
+                                        '!cursor-not-allowed opacity-60': isSyncForbidden(domain)
+                                    }"
+                                    @click="syncZone(domain)"
+                                    :disabled="sync_running[domain] === true || isSyncForbidden(domain)"
+                                    :title="isSyncForbidden(domain) ? `${domain} is excluded from syncing` : `Sync ${domain} now`"
+                                >
+                                    <svg
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        viewbox="0 0 16 16"
+                                        class="size-4 fill-current"
+                                        :class="{'animate-spin !text-emerald-500': sync_running[domain] === true}"
+                                    >
+                                        <path fill-rule="evenodd" d="M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.199 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.371a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.841a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.273Z" clip-rule="evenodd" />
+                                    </svg>
+                                </button>
+                            </td>
+                        </tr>
+                    </table>
+                </template>
+            </ul>
+        </div>
+        <div class="flex flex-col gap-2 basis-1/2 shrink-0">
+            <h2 class="flex gap-3">
+                <span class="text-2xl font-bold">Log</span>
+                <button
+                    class="link hover:!text-rose-500 p-1"
+                    @click="clearLog()"
+                    :disabled="clearing_log"
+                    title="Clear log"
+                >
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewbox="0 -1.43 122.88 122.88"
+                        class="size-4 fill-current"
+                        :class="{'animate-ping': clearing_log}"
+                    >
+                        <g><path fill-rule="evenodd" clip-rule="evenodd" d="M110.97,1.27L70.02,42.73l10.67,10.36l41.25-41.56C125.58,3.7,117.92-2.85,110.97,1.27L110.97,1.27z M54.04,46.81c0.4-0.31,0.81-0.58,1.22-0.81l0.15-0.08c2.35-1.28,4.81-1.24,7.39,0.53l7.17,6.98l0.11,0.11l6.6,6.42 c2.73,2.78,3.34,5.88,1.83,9.31l-19.35,50.75C24.02,112.99-0.34,87.94,0,49.73C19.23,55.35,37.75,57.19,54.04,46.81L54.04,46.81z"/></g>
+                    </svg>
+                </button>
+
+            </h2>
+            <pre
+                class="
+                    bg-gray-200 shadow-inner rounded-lg p-2 whitespace-pre-wrap
+                    grow overflow-auto flex flex-col-reverse
+                    text-xs uppercase font-semibold leading-[12px]
+                    max-h-[400px] md:max-h-none
+                "
+                v-text="log ? log : 'Empty'"
+            ></pre>
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script type="module">
+    Vue.createApp((await import(URL.createObjectURL(
+        new Blob([document.querySelector('#app-code').textContent], {type: 'text/javascript'})
+    ))).default).mount('#app-template');
+</script>
+
+</body>
+</html>

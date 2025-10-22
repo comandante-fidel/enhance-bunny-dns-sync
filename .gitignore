@@ -1,0 +1,8 @@
+/data/cli.lock
+/data/sync.log
+/data/dns-zones/*.json
+/public_html/web.min.css
+/.idea/
+/node_modules/
+/config.php
+/package-lock.json
