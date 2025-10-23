@@ -59,6 +59,12 @@ class Engine
         );
     }
 
+    protected function isSyncForbidden(string $domain) : bool
+    {
+        return ($this->dns_zones_filter_mode === 'blacklist' && in_array($domain, $this->dns_zones_list))
+            || ($this->dns_zones_filter_mode === 'whitelist' && !in_array($domain, $this->dns_zones_list));
+    }
+
     public function sync(
         ?string $specific_zone = null,
         bool $dry_run = false
@@ -103,7 +109,7 @@ class Engine
                 foreach ($websites as $website) {
                     Common::log("Website: {$website->domain->domain}", LogLevel::Debug);
 
-                    // Get all domains for this website from the specified organization
+                    // Get all domains for this website
                     try {
                         $domains = $this->enhance_api->getDomains($website->id, $org_id);
                         Common::log("  Found " . count($domains) . " domain(s) for {$website->domain->domain}", LogLevel::Debug);
@@ -111,21 +117,25 @@ class Engine
                         foreach ($domains as $domain) {
                             Common::log("  Checking domain: {$domain->domain}", LogLevel::Debug);
                             
-                            // Apply filtering
-                            if (
-                                ($specific_zone !== null && $specific_zone !== $domain->domain)
-                                || ($this->dns_zones_filter_mode === 'whitelist' && !in_array($domain->domain, $this->dns_zones_list))
-                                || ($this->dns_zones_filter_mode === 'blacklist' && in_array($domain->domain, $this->dns_zones_list))
-                            ) {
-                                Common::log("  Skipping {$domain->domain} (filtered)", LogLevel::Debug);
+                            // Skip if specific zone requested and this isn't it
+                            if ($specific_zone !== null && $specific_zone !== $domain->domain) {
+                                Common::log("  Skipping {$domain->domain} (not the requested zone)", LogLevel::Debug);
                                 continue;
+                            }
+
+                            // Check if sync is forbidden for this domain
+                            $sync_forbidden = $this->isSyncForbidden($domain->domain);
+                            
+                            if ($sync_forbidden) {
+                                Common::log("  Domain {$domain->domain} is filtered (will fetch metadata but not sync to Bunny)", LogLevel::Debug);
                             }
 
                             $this->syncDomain(
                                 domain: $domain,
                                 website_id: $website->id,
                                 org_id: $org_id,
-                                dry_run: $dry_run
+                                dry_run: $dry_run,
+                                sync_forbidden: $sync_forbidden
                             );
                         }
                     } catch (\Exception $e) {
@@ -144,7 +154,8 @@ class Engine
         object $domain,
         string $website_id,
         ?string $org_id = null,
-        bool $dry_run = false
+        bool $dry_run = false,
+        bool $sync_forbidden = false
     ) : void
     {
         Common::log("  Fetching DNS zone for {$domain->domain}...", LogLevel::Debug);
@@ -169,7 +180,8 @@ class Engine
             
             Common::log("  Zone {$domain->domain} finalized. Need sync: " . ($dns_zone->need_sync ? 'YES' : 'NO') . ", Bunny ID: " . ($dns_zone->bunny_id ?? 'none'), LogLevel::Debug);
 
-            if (!$dry_run && ($dns_zone->need_sync || is_null($dns_zone->bunny_id))) {
+            // Only sync to Bunny if not forbidden by filter and (dry_run is false and needs sync)
+            if (!$sync_forbidden && !$dry_run && ($dns_zone->need_sync || is_null($dns_zone->bunny_id))) {
                 try {
                     $this->syncZone($dns_zone);
                 } catch (BunnyApiException $e) {
@@ -180,7 +192,11 @@ class Engine
                     throw $e;
                 }
             } else {
-                Common::log("  Zone {$domain->domain} does not need sync", LogLevel::Debug);
+                if ($sync_forbidden) {
+                    Common::log("  Zone {$domain->domain} excluded from syncing by filter (but metadata saved)", LogLevel::Debug);
+                } else {
+                    Common::log("  Zone {$domain->domain} does not need sync", LogLevel::Debug);
+                }
             }
         } catch (\Exception $e) {
             Common::log("  Error processing {$domain->domain}: " . $e->getMessage(), LogLevel::Error);
