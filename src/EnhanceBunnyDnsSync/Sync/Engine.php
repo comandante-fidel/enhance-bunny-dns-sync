@@ -74,25 +74,66 @@ class Engine
             Common::log("DNS zone {$specific_zone} synchronization has been requested");
         }
 
-        $websites = $this->enhance_api->getWebsites($this->skip_disabled_websites);
-
-        foreach ($websites as $website) {
-            Common::log("Website: {$website->domain->domain}", LogLevel::Debug);
-
-            foreach ($this->enhance_api->getDomains($website->id) as $domain) {
-                if (
-                    ($specific_zone !== null && $specific_zone !== $domain->domain)
-                    || ($this->dns_zones_filter_mode === 'whitelist' && !in_array($domain->domain, $this->dns_zones_list))
-                    || ($this->dns_zones_filter_mode === 'blacklist' && in_array($domain->domain, $this->dns_zones_list))
-                ) {
-                    continue;
+        // Collect all organizations to process (master + all customers)
+        $organizations = [null]; // null represents the master organization
+        
+        try {
+            $customers = $this->enhance_api->getCustomers();
+            Common::log("Found " . count($customers) . " customer organization(s)", LogLevel::Debug);
+            
+            foreach ($customers as $customer) {
+                if ($customer->status === 'active') {
+                    $organizations[] = $customer->id;
+                    Common::log("Will process customer: {$customer->name} (ID: {$customer->id})", LogLevel::Debug);
                 }
+            }
+        } catch (\Exception $e) {
+            Common::log("Failed to fetch customers: " . $e->getMessage(), LogLevel::Error);
+        }
 
-                $this->syncDomain(
-                    domain: $domain,
-                    website_id: $website->id,
-                    dry_run: $dry_run
-                );
+        // Process websites from each organization
+        foreach ($organizations as $org_id) {
+            $org_label = $org_id ? "customer organization {$org_id}" : "master organization";
+            Common::log("Processing {$org_label}", LogLevel::Debug);
+            
+            try {
+                $websites = $this->enhance_api->getWebsites($this->skip_disabled_websites, $org_id);
+                Common::log("Found " . count($websites) . " website(s) in {$org_label}", LogLevel::Debug);
+                
+                foreach ($websites as $website) {
+                    Common::log("Website: {$website->domain->domain}", LogLevel::Debug);
+
+                    // Get all domains for this website from the specified organization
+                    try {
+                        $domains = $this->enhance_api->getDomains($website->id, $org_id);
+                        Common::log("  Found " . count($domains) . " domain(s) for {$website->domain->domain}", LogLevel::Debug);
+                        
+                        foreach ($domains as $domain) {
+                            Common::log("  Checking domain: {$domain->domain}", LogLevel::Debug);
+                            
+                            // Apply filtering
+                            if (
+                                ($specific_zone !== null && $specific_zone !== $domain->domain)
+                                || ($this->dns_zones_filter_mode === 'whitelist' && !in_array($domain->domain, $this->dns_zones_list))
+                                || ($this->dns_zones_filter_mode === 'blacklist' && in_array($domain->domain, $this->dns_zones_list))
+                            ) {
+                                Common::log("  Skipping {$domain->domain} (filtered)", LogLevel::Debug);
+                                continue;
+                            }
+
+                            $this->syncDomain(
+                                domain: $domain,
+                                website_id: $website->id,
+                                org_id: $org_id,
+                                dry_run: $dry_run
+                            );
+                        }
+                    } catch (\Exception $e) {
+                        Common::log("  Error getting domains for {$website->domain->domain}: " . $e->getMessage(), LogLevel::Error);
+                    }
+                }
+            } catch (\Exception $e) {
+                Common::log("Error processing {$org_label}: " . $e->getMessage(), LogLevel::Error);
             }
         }
 
@@ -102,31 +143,47 @@ class Engine
     protected function syncDomain(
         object $domain,
         string $website_id,
+        ?string $org_id = null,
         bool $dry_run = false
     ) : void
     {
-        $dns_zone_data = $this->enhance_api->getDnsZone($website_id, $domain->domainId);
-
-        if (is_null($dns_zone_data)) {
-            Common::log("Skip empty DNS zone {$domain->domain}", LogLevel::Debug);
+        Common::log("  Fetching DNS zone for {$domain->domain}...", LogLevel::Debug);
+        
+        try {
+            $dns_zone_data = $this->enhance_api->getDnsZone($website_id, $domain->domainId, $org_id);
+        } catch (\Exception $e) {
+            Common::log("  Error fetching DNS zone for {$domain->domain}: " . $e->getMessage(), LogLevel::Error);
             return;
         }
 
-        Common::log("Domain: {$domain->domain}", LogLevel::Debug);
+        if (is_null($dns_zone_data)) {
+            Common::log("  Skip empty DNS zone {$domain->domain}", LogLevel::Debug);
+            return;
+        }
 
-        $dns_zone = Zone::createFromEnhance($dns_zone_data, $this->dns_zones_folder);
-        $dns_zone->finalize();
+        Common::log("  Domain: {$domain->domain} - Has DNS zone data", LogLevel::Debug);
 
-        if (!$dry_run && ($dns_zone->need_sync || is_null($dns_zone->bunny_id))) {
-            try {
-                $this->syncZone($dns_zone);
-            } catch (BunnyApiException $e) {
-                if ($e->http_code === 401 || str_contains($e->raw_response, 'Authorization has been denied')) {
-                    throw new SyncException(SyncExceptionType::BUNNY_WRONG_CREDENTIALS);
+        try {
+            $dns_zone = Zone::createFromEnhance($dns_zone_data, $this->dns_zones_folder);
+            $dns_zone->finalize();
+            
+            Common::log("  Zone {$domain->domain} finalized. Need sync: " . ($dns_zone->need_sync ? 'YES' : 'NO') . ", Bunny ID: " . ($dns_zone->bunny_id ?? 'none'), LogLevel::Debug);
+
+            if (!$dry_run && ($dns_zone->need_sync || is_null($dns_zone->bunny_id))) {
+                try {
+                    $this->syncZone($dns_zone);
+                } catch (BunnyApiException $e) {
+                    if ($e->http_code === 401 || str_contains($e->raw_response, 'Authorization has been denied')) {
+                        throw new SyncException(SyncExceptionType::BUNNY_WRONG_CREDENTIALS);
+                    }
+
+                    throw $e;
                 }
-
-                throw $e;
+            } else {
+                Common::log("  Zone {$domain->domain} does not need sync", LogLevel::Debug);
             }
+        } catch (\Exception $e) {
+            Common::log("  Error processing {$domain->domain}: " . $e->getMessage(), LogLevel::Error);
         }
     }
 
