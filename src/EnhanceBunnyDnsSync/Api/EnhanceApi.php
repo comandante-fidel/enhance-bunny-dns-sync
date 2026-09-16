@@ -14,7 +14,7 @@ readonly class EnhanceApi
 
     public function __construct(
         string $host,
-        string $organization_id,
+        protected string $organization_id,
         string $access_token,
     ) {
         $this->client = new HttpClient(
@@ -26,10 +26,21 @@ readonly class EnhanceApi
         );
     }
 
-    public function getWebsites(bool $skip_disabled) : array
+    public function getCustomers() : array
     {
+        return $this->handleResponse(
+            $this->client->request('customers')
+        )?->items ?? [];
+    }
+
+    public function getWebsites(bool $skip_disabled, ?string $org_id = null) : array
+    {
+        // If a specific org_id is provided, construct the path to query that organization
+        // Otherwise, use the default organization set in the constructor
+        $endpoint = $org_id ? "../{$org_id}/websites" : 'websites';
+        
         $items = $this->handleResponse(
-            $this->client->request('websites')
+            $this->client->request($endpoint)
         )?->items;
 
         if ($skip_disabled)
@@ -40,18 +51,26 @@ readonly class EnhanceApi
         return $items;
     }
 
-    public function getDomains(string $website_id) : array
+    public function getDomains(string $website_id, ?string $org_id = null) : array
     {
+        $endpoint = $org_id 
+            ? "../{$org_id}/websites/{$website_id}/domains"
+            : "websites/{$website_id}/domains";
+            
         return $this->handleResponse(
-            $this->client->request("websites/{$website_id}/domains")
+            $this->client->request($endpoint)
         )?->items ?? [];
     }
 
-    public function getDnsZone(string $website_id, string $domain_id) : ?object
+    public function getDnsZone(string $website_id, string $domain_id, ?string $org_id = null) : ?object
     {
+        $endpoint = $org_id
+            ? "../{$org_id}/websites/{$website_id}/domains/{$domain_id}/dns-zone"
+            : "websites/{$website_id}/domains/{$domain_id}/dns-zone";
+            
         try {
             return $this->handleResponse(
-                $this->client->request("websites/{$website_id}/domains/{$domain_id}/dns-zone")
+                $this->client->request($endpoint)
             );
         } catch (EnhanceApiException $e) {
             if ($e->http_code === 404) {
